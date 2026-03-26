@@ -1,0 +1,11 @@
+[project]
+name = "rc-beam-designer-web"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "air[standard]>=0.48.0",
+    "pdfkit>=1.0.0",
+    "wkhtmltopdf>=0.2",
+]
