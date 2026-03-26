@@ -1,0 +1,4 @@
+air>=0.1.0
+fastapi[standard]>=0.115.0
+pydantic>=2.9.0
+pdfkit>=1.0.0
