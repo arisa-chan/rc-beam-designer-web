@@ -37,7 +37,7 @@ def index(request: air.Request):
                     ),
                     air.Div(
                         air.H3("RC Column Designer"),
-                        air.P("v0.8.2 beta.", style="margin-bottom: 20px; color: var(--text-secondary);"),
+                        air.P("v0.9 beta.", style="margin-bottom: 20px; color: var(--text-secondary);"),
                         air.A("Launch", href="/column", class_="button"),
                         air.A("User Manual", href="/column/manual", target="_blank",
                               class_="button secondary"),

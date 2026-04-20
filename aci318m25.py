@@ -7,27 +7,28 @@ Based on ACI CODE-318-25 International System of Units
 """
 
 import math
+import warnings
 from typing import Dict, Tuple, List, Optional, Union
 from dataclasses import dataclass
 from enum import Enum
 
 class ConcreteStrengthClass(Enum):
-    FC14 = "13.8"    
-    FC17 = "17.3"    
-    FC21 = "20.7"    
-    FC28 = "27.6"    
-    FC35 = "34.5"    
-    FC42 = "41.4"    
-    FC50 = "48.3"    
-    FC55 = "55.2"    
-    FC70 = "70"      
-    FC80 = "80"      
-    FC100 = "100"    
+    FC14 = "14"      # 14 MPa (ACI-metric nominal; exact SI: 13.8 MPa)
+    FC17 = "17"      # 17 MPa (ACI-metric nominal; exact SI: 17.3 MPa)
+    FC21 = "21"      # 21 MPa (ACI-metric nominal; exact SI: 20.7 MPa)
+    FC28 = "28"      # 28 MPa (ACI-metric nominal; exact SI: 27.6 MPa)
+    FC35 = "35"      # 35 MPa (ACI-metric nominal; exact SI: 34.5 MPa)
+    FC42 = "42"      # 42 MPa (ACI-metric nominal; exact SI: 41.4 MPa)
+    FC50 = "50"      # 50 MPa (ACI-metric nominal; exact SI: 48.3 MPa)
+    FC55 = "55"      # 55 MPa (ACI-metric nominal; exact SI: 55.2 MPa)
+    FC70 = "70"
+    FC80 = "80"
+    FC100 = "100"
 
 class ReinforcementGrade(Enum):
-    GRADE280 = "276"   
-    GRADE420 = "415"   
-    GRADE520 = "520"   
+    GRADE280 = "280"   # 280 MPa (ACI-metric nominal; exact SI: 276 MPa)
+    GRADE420 = "420"   # 420 MPa (ACI-metric nominal; exact SI: 415 MPa)
+    GRADE520 = "520"
     GRADE550 = "550"   
 
 class ExposureCondition(Enum):
@@ -148,10 +149,12 @@ class ACI318M25:
 
     def get_concrete_modulus(self, fc_prime: float, lambda_factor: float = 1.0, gamma_c: float = 24.0) -> float:
         if gamma_c == 24.0:
-            ec = 4700 * math.sqrt(fc_prime) * lambda_factor
+            # ACI 318M-25 §19.2.2.1: Ec = 4700√f′c for normal-weight concrete; λ does not modify Ec.
+            ec = 4700 * math.sqrt(fc_prime)
         else:
+            # wc-based formula for lightweight concrete; unit weight already captures density effect.
             w_c = gamma_c * 101.9716
-            ec = (w_c ** 1.5) * 0.043 * math.sqrt(fc_prime) * lambda_factor
+            ec = (w_c ** 1.5) * 0.043 * math.sqrt(fc_prime)
         return ec
 
     def get_concrete_cover(self, element: StructuralElement, exposure: str = 'normal', construction_type: str = 'cast_in_place') -> Tuple[float, str, str]:
@@ -191,7 +194,12 @@ class ACI318M25:
         db = self.get_bar_diameter(bar_size)
         psi_t = modification_factors.get('top_bar', 1.0) if modification_factors else 1.0
         psi_e = modification_factors.get('epoxy', 1.0) if modification_factors else 1.0
-        psi_s = modification_factors.get('size', 1.0) if modification_factors else 1.0
+        # ACI 318M-25 Table 25.5.2.1: ψs = 0.8 for bars ≤ D19, 1.0 for larger bars.
+        # Caller may override via modification_factors['size']; otherwise auto-derived.
+        if modification_factors and 'size' in modification_factors:
+            psi_s = modification_factors['size']
+        else:
+            psi_s = 0.8 if self.get_bar_diameter(bar_size) <= 19.05 else 1.0  # D19 db ≈ 19.05 mm
         lambda_factor = modification_factors.get('lambda', 1.0) if modification_factors else 1.0
         # ACI 318M-25 §25.5.2.2: grade factor ψg (1.15 for Grade 550, 1.0 otherwise)
         psi_g = 1.15 if fy > 420.0 else 1.0
@@ -210,10 +218,8 @@ class ACI318M25:
         """Compression-zone factor β1 per ACI 318M-25 §22.2.2.3."""
         if fc_prime <= 28.0:
             return 0.85
-        elif fc_prime <= 55.0:
-            return 0.85 - 0.05 * (fc_prime - 28.0) / 7.0
-        else:
-            return 0.65
+        # Single expression; max(0.65, …) correctly floors β1 for any fc_prime.
+        return max(0.65, 0.85 - 0.05 * (fc_prime - 28.0) / 7.0)
 
     def calculate_balanced_reinforcement_ratio(self, fc_prime: float, fy: float, beta1: float = None) -> float:
         if beta1 is None:
@@ -225,11 +231,24 @@ class ACI318M25:
         rho_b = (0.85 * fc_prime * beta1 / fy) * cb_over_d
         return rho_b
 
-    def calculate_minimum_reinforcement_ratio(self, fc_prime: float, fy: float) -> float:
+    # ── Beam-specific reinforcement ratio limits (ACI 318M-25 §9.6 / §9.3) ─────────────────
+    def calculate_beam_minimum_reinforcement_ratio(self, fc_prime: float, fy: float) -> float:
+        """Minimum ρ for beams per ACI 318M-25 §9.6.1.2."""
         return max(1.4 / fy, 0.25 * math.sqrt(fc_prime) / fy)
 
-    def calculate_maximum_reinforcement_ratio(self, fc_prime: float, fy: float) -> float:
+    def calculate_beam_maximum_reinforcement_ratio(self, fc_prime: float, fy: float) -> float:
+        """Maximum ρ for beams (εt ≥ 0.004 limit) per ACI 318M-25 §9.3.3.1."""
         return (3.0 / 8.0) * 0.85 * fc_prime * self.calculate_beta1(fc_prime) / fy
+
+    # ── Column-specific reinforcement ratio limits (ACI 318M-25 §10.6.1) ─────────────────────
+    def calculate_column_minimum_reinforcement_ratio(self) -> float:
+        """Minimum longitudinal ρ for columns: 1 % per ACI 318M-25 §10.6.1.1."""
+        return 0.01
+
+    def calculate_column_maximum_reinforcement_ratio(self, is_special_moment_frame: bool = False) -> float:
+        """Maximum longitudinal ρ for columns: 8 % (general) or 6 % (SMF splice zones)
+        per ACI 318M-25 §10.6.1.1 and §18.7.4.1."""
+        return 0.06 if is_special_moment_frame else 0.08
 
     def calculate_deflection_multiplier(self, rho: float, rho_prime: float = 0.0) -> float:
         return 2.0 / (1 + 50 * rho_prime)
@@ -272,7 +291,14 @@ class ACI318M25:
         
         ec = self.get_concrete_modulus(fc_prime)
         gamma_c = 24.0 
-        
+
+        # ACI 318M-25 §26.4.1: fʼc > 69 MPa requires special provisions.
+        if fc_prime > 69.0:
+            warnings.warn(
+                f"fʼc = {fc_prime} MPa exceeds 69 MPa. "
+                "ACI 318M-25 §26.4.1 requires special provisions for ultra-high-strength concrete.",
+                UserWarning, stacklevel=2)
+
         desc = f"fc' = {fc_prime} MPa, fy = {fy} MPa, fyt = {fyt} MPa"
         
         return MaterialProperties(

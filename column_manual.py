@@ -77,7 +77,7 @@ def generate_column_manual() -> bytes:
     doc.append(NoEscape(r'{\Huge \textbf{\textcolor{aciblue}{RC Column Designer}}}\\[0.5em]'))
     doc.append(NoEscape(r'{\Large \textbf{User Manual}}\\[0.3em]'))
     doc.append(NoEscape(r'{\large \textcolor{acigray}{ACI 318M-25 Compliant Design Module}}\\[0.2em]'))
-    doc.append(NoEscape(r'{\normalsize Version 0.8.1 beta \quad \textcolor{acigray}{---} \quad April 2026}'))
+    doc.append(NoEscape(r'{\normalsize Version 0.9.0 \quad \textcolor{acigray}{---} \quad April 2026}'))
     doc.append(NoEscape(r'\end{center}'))
     doc.append(NoEscape(r'\vspace{2em}'))
     doc.append(NoEscape(r'\hrule'))
@@ -122,10 +122,12 @@ def generate_column_manual() -> bytes:
                                   r'no load-combination engine is included.'))
             lst.add_item(NoEscape(r'Separate top and bottom moments/shears are accepted; '
                                   r'the governing (maximum absolute) values are used for design.'))
-            lst.add_item(NoEscape(r'Slenderness is evaluated about both axes; the governing axis is used '
-                                  r'for moment magnification.'))
-            lst.add_item(NoEscape(r'Biaxial bending is checked via the Bresler load contour method '
-                                  r'(non-dimensional interaction with exponent \(\alpha = 1.15\)).'))
+            lst.add_item(NoEscape(r'Slenderness is evaluated independently about both axes; '
+                                  r'magnification is applied per-axis when the '
+                                  r'\(kl_u/r > \min(40,\,34-12M_1/M_2)\) limit is exceeded.'))
+            lst.add_item(NoEscape(r'Biaxial bending is checked via the Bresler load contour method: '
+                                  r'exponent \(\alpha = 1.15\) for rectangular sections, '
+                                  r'\(\alpha = 1.5\) for circular sections.'))
             lst.add_item(NoEscape(r'Seismic joint checks (strong-column-weak-beam and joint shear) '
                                   r'apply only to SDC D, E, or F with Special Moment Frame selected.'))
             lst.add_item(NoEscape(r'The module checks only the top joint of the column. '
@@ -159,6 +161,10 @@ def generate_column_manual() -> bytes:
                     (r'Clear height \(l_u\)', 'mm',
                      r'Unsupported (clear) height between lateral restraints. '
                      r'Used for slenderness evaluation.'),
+                    (r'Clear cover \(c_c\)', 'mm',
+                     r'Concrete clear cover to the face of the transverse reinforcement. '
+                     r'Affects bar spacing, effective depth, and SMF hx checks. '
+                     r'Per ACI 318M-25 Table 20.6.1.3 --- typically 40 mm for columns.'),
                 ]
                 for r in rows:
                     tbl.add_row([NoEscape(r[0]), NoEscape(r[1]), NoEscape(r[2])])
@@ -199,6 +205,33 @@ def generate_column_manual() -> bytes:
                 ]
                 for r in rows:
                     tbl.add_row([NoEscape(r[0]), NoEscape(r[1])])
+                tbl.add_hline()
+
+        with doc.create(Subsection('Slenderness Parameters')):
+            doc.append(NoEscape(
+                r'These parameters control the slenderness limit and magnification per '
+                r'ACI 318M-25 \S6.2.5 and are entered on the \textbf{Materials} and '
+                r'\textbf{Loads} tabs respectively.'
+            ))
+            doc.append(NoEscape(r'\medskip'))
+            with doc.create(LongTable('p{4.5cm} p{2cm} p{7cm}')) as tbl:
+                tbl.add_hline()
+                tbl.add_row([bold('Parameter'), bold('Unit'), bold('Description')])
+                tbl.add_hline()
+                rows = [
+                    (r'Effective-length factor \(k\)', r'---',
+                     r'Reflects the degree of end restraint. '
+                     r'Use \(k \leq 1.0\) for braced (non-sway) frames and '
+                     r'\(k > 1.0\) for sway frames. Range: 0.5--2.0.'),
+                    (r'\(M_1/M_2\) about x-axis', r'---',
+                     r'Ratio of smaller to larger factored end moment about the x-axis. '
+                     r'Positive = single curvature (conservative); '
+                     r'negative = double curvature (relaxed limit). Range: \(-1.0\) to \(+1.0\).'),
+                    (r'\(M_1/M_2\) about y-axis', r'---',
+                     r'Same as above but for the y-axis.'),
+                ]
+                for r in rows:
+                    tbl.add_row([NoEscape(r[0]), NoEscape(r[1]), NoEscape(r[2])])
                 tbl.add_hline()
 
         with doc.create(Subsection('Preferred Reinforcement Sizes')):
@@ -245,16 +278,24 @@ def generate_column_manual() -> bytes:
         # -------------------------------------------------------------- 4.1 Slenderness
         with doc.create(Subsection('Slenderness Check — ACI 318M-25 §6.2.5')):
             doc.append(NoEscape(
-                r'The slenderness ratio \(kl_u/r\) is computed about both axes. '
-                r'For rectangular sections, the radius of gyration is:'
+                r'The slenderness ratio \(kl_u/r\) is evaluated independently for each '
+                r'bending axis. For rectangular sections, the radius of gyration is:'
             ))
             doc.append(_eq(r'r_x = \frac{b}{2\sqrt{3}}, \qquad r_y = \frac{h}{2\sqrt{3}}'))
             doc.append(NoEscape(r'For circular sections:'))
             doc.append(_eq(r'r = \frac{D}{4}'))
             doc.append(NoEscape(
-                r'The effective length factor \(k = 1.0\) is assumed (sway frame, conservative). '
-                r'If \(kl_u/r \leq 22\), slenderness effects may be neglected '
-                r'(ACI 318M-25 \S6.2.5). Otherwise, moment magnification is applied.'
+                r'The effective length factor \(k\) is a user input (see Section~3.4). '
+                r'Slenderness may be neglected for a given axis when '
+                r'(ACI 318M-25 \S6.2.5):'
+            ))
+            doc.append(_eq(
+                r'\frac{kl_u}{r} \leq \min\!\left(40,\; 34 - 12\,\frac{M_1}{M_2}\right)'
+            ))
+            doc.append(NoEscape(
+                r'where \(M_1/M_2\) is the end-moment ratio for the axis being checked '
+                r'(positive for single curvature, negative for double curvature). '
+                r'When the limit is exceeded on either axis, moment magnification is applied to that axis.'
             ))
 
             with doc.create(Subsubsection('Moment Magnification — ACI 318M-25 §6.6.4')):
@@ -305,10 +346,12 @@ def generate_column_manual() -> bytes:
                 ))
                 doc.append(_eq(
                     r'\left(\frac{M_{ux}}{\varphi M_{nx}}\right)^\alpha + '
-                    r'\left(\frac{M_{uy}}{\varphi M_{ny}}\right)^\alpha \leq 1.0, '
-                    r'\qquad \alpha = 1.15'
+                    r'\left(\frac{M_{uy}}{\varphi M_{ny}}\right)^\alpha \leq 1.0'
                 ))
                 doc.append(NoEscape(
+                    r'The exponent \(\alpha\) depends on the section shape: '
+                    r'\(\alpha = 1.15\) for rectangular sections; \(\alpha = 1.5\) for '
+                    r'circular sections (closer to the circular interaction surface). '
                     r'The reported \textbf{P-M Interaction Ratio} is the equivalent uniaxial DCR '
                     r'back-calculated from the Bresler sum.'
                 ))
@@ -339,18 +382,21 @@ def generate_column_manual() -> bytes:
 
             with doc.create(Subsubsection('SMF Capacity Design Shear — ACI 318M-25 §18.7.6')):
                 doc.append(NoEscape(
-                    r'For SMF columns, the design shear \(V_e\) is the greater of the factored shear '
-                    r'and the capacity-design shear from probable moment capacities:'
+                    r'For SMF columns, the capacity-design shear is evaluated '
+                    r'\textbf{independently for each principal axis}. '
+                    r'For each direction the design shear is taken as:'
                 ))
                 doc.append(_eq(
-                    r'V_e = \max\!\left(V_u,\; \frac{2\,M_{pr}}{l_u}\right)'
+                    r'V_{e,x} = \max\!\left(V_{u,x},\; \frac{2\,M_{pr,x}}{l_u}\right), '
+                    r'\qquad V_{e,y} = \max\!\left(V_{u,y},\; \frac{2\,M_{pr,y}}{l_u}\right)'
                 ))
                 doc.append(NoEscape(
-                    r'where \(M_{pr}\) is the \textbf{probable moment capacity} computed '
-                    r'with \(f_{y,pr} = 1.25\,f_y\) and \(\varphi = 1.0\). '
-                    r'When the earthquake-induced shear component exceeds 50\,\% of \(V_e\) '
-                    r"\textit{and} \(P_u < A_g f'_c / 20\), then \(V_c = 0\) "
-                    r'(ACI 318M-25 \S18.7.6.2.1).'
+                    r'where \(M_{pr,x}\) and \(M_{pr,y}\) are the \textbf{probable moment capacities} '
+                    r'about each axis, computed with \(f_{y,pr} = 1.25\,f_y\) and \(\varphi = 1.0\). '
+                    r'The governing probable shear (max of \(V_{e,x}\) and \(V_{e,y}\)) is used to '
+                    r'evaluate the \(V_c = 0\) trigger: when this seismic shear component '
+                    r"exceeds 50\,\% of the total design shear \textit{and} \(P_u < 0.05\,A_g\,f'_c\), "
+                    r'\(V_c\) is taken as zero (ACI 318M-25 \S18.7.6.2.1).'
                 ))
 
         # -------------------------------------------------------------- 4.4 Confinement (SMF)
@@ -451,6 +497,14 @@ def generate_column_manual() -> bytes:
     # 6. INTERPRETING DESIGN RESULTS
     # ===================================================================
     with doc.create(Section('Interpreting Design Results')):
+        doc.append(NoEscape(
+            r'The Design Results card is arranged as two columns: the left column shows the '
+            r'cross-section and elevation diagrams; the right column contains four stacked panels: '
+            r'\textbf{Capacity Checks}, \textbf{Section Capacities}, \textbf{Reinforcement}, '
+            r'and (for SMF) the \textbf{Strong-Column-Weak-Beam} check. '
+            r'An overall \textbf{PASS}/\textbf{FAIL} banner appears at the top of the card.'
+        ))
+        doc.append(NoEscape(r'\medskip'))
 
         with doc.create(Subsection('Section Diagrams')):
             with doc.create(Itemize()) as lst:
@@ -466,7 +520,65 @@ def generate_column_manual() -> bytes:
                     r'For spiral columns, the elevation shows a zigzag (helix) pattern. '
                     r'Red bracket annotations indicate the confinement length \(l_o\).'))
 
-        with doc.create(Subsection('Design Checks (DCR)')):
+        with doc.create(Subsection('Capacity Checks Panel')):
+            doc.append(NoEscape(
+                r'Three colour-coded gauge bars give an at-a-glance view of utilisation. '
+                r'Bars turn \textbf{green} at \(\leq 80\,\%\), '
+                r'\textbf{amber} between 80\,\% and 100\,\%, and '
+                r'\textbf{red} when the limit is exceeded.'
+            ))
+            doc.append(NoEscape(r'\medskip'))
+            with doc.create(LongTable('p{4.5cm} p{8.5cm}')) as tbl:
+                tbl.add_hline()
+                tbl.add_row([bold('Gauge'), bold('Description')])
+                tbl.add_hline()
+                rows = [
+                    (r'P-M Interaction', r'Bresler biaxial DCR: \((M_{ux}/\varphi M_{nx})^\alpha + (M_{uy}/\varphi M_{ny})^\alpha\). Must be \(\leq 1.00\).'),
+                    (r'Shear X', r'\(V_{u,x}\,/\,\varphi V_{n,x}\). Must be \(\leq 1.00\).'),
+                    (r'Shear Y', r'\(V_{u,y}\,/\,\varphi V_{n,y}\). Must be \(\leq 1.00\).'),
+                ]
+                for r in rows:
+                    tbl.add_row([NoEscape(r[0]), NoEscape(r[1])])
+                tbl.add_hline()
+
+        with doc.create(Subsection('Section Capacities Panel')):
+            doc.append(NoEscape(
+                r'Below the gauge bars, the following computed capacities are listed:'
+            ))
+            with doc.create(LongTable('p{3.5cm} p{9.5cm}')) as tbl:
+                tbl.add_hline()
+                tbl.add_row([bold('Item'), bold('Description')])
+                tbl.add_hline()
+                rows = [
+                    (r'\(\varphi P_n\)', r'Reduced axial capacity (kN).'),
+                    (r'\(\varphi M_{nx}\)', r'Reduced moment capacity about the x-axis (kN\(\cdot\)m) at the applied \(P_u\).'),
+                    (r'\(\varphi M_{ny}\)', r'Reduced moment capacity about the y-axis (kN\(\cdot\)m) at the applied \(P_u\).'),
+                    (r'Slenderness', r'Flag indicating whether slenderness magnification was triggered on either axis, with reported \(\delta_{ns,x}\) and \(\delta_{ns,y}\).'),
+                ]
+                for r in rows:
+                    tbl.add_row([NoEscape(r[0]), NoEscape(r[1])])
+                tbl.add_hline()
+
+        with doc.create(Subsection('Reinforcement Panel')):
+            doc.append(NoEscape(
+                r'The reinforcement panel reports the selected bar arrangement and a '
+                r'steel ratio gauge. The \(\rho_g\) bar fills proportionally within the '
+                r'code-permitted range (\(1\,\% \leq \rho_g \leq 8\,\%\)) and turns red '
+                r'when the ratio falls outside this range.'
+            ))
+
+        with doc.create(Subsection('Overall Status Banner')):
+            doc.append(NoEscape(
+                r'A \textbf{\textcolor{aciblue}{PASS}} banner is displayed when all three '
+                r'capacity checks satisfy \(\text{DCR} \leq 1.00\). '
+                r'Any exceedance changes the banner to \textbf{\textcolor{acipink}{FAIL}}.'
+            ))
+
+        with doc.create(Subsection('Design Checks Summary')):
+            doc.append(NoEscape(
+                r'For SMF columns with seismic joint checks, the following additional '
+                r'ratios are also reported in the results:'
+            ))
             with doc.create(LongTable('p{4cm} p{9cm}')) as tbl:
                 tbl.add_hline()
                 tbl.add_row([bold('Check'), bold('Description')])
@@ -481,24 +593,12 @@ def generate_column_manual() -> bytes:
                     tbl.add_row([NoEscape(r[0]), NoEscape(r[1])])
                 tbl.add_hline()
 
-        with doc.create(Subsection('Reinforcement Details')):
-            with doc.create(Itemize()) as lst:
-                lst.add_item(NoEscape(
-                    r'\textbf{Vertical bars}: number and size of longitudinal reinforcement.'))
-                lst.add_item(NoEscape(
-                    r'\textbf{Ties/Spiral (support zone)}: transverse reinforcement within the '
-                    r'confinement length \(l_o\) at each end. Shown in the cross-section diagram '
-                    r'and elevation diagram in red.'))
-                lst.add_item(NoEscape(
-                    r'\textbf{Ties/Spiral (midheight)}: transverse reinforcement outside the '
-                    r'confinement zone. Shown in gray in the elevation diagram.'))
-
         with doc.create(Subsection('Design Notes')):
             doc.append(NoEscape(
                 r'The \textit{Design Notes} panel summarises design decisions and warnings. '
                 r'Entries prefixed with \textbf{Violation} or \textbf{CRITICAL} indicate '
                 r'checks that failed and must be resolved by revising the geometry or loads. '
-                r'Informational entries (\(\triangleright\)) explain design choices made '
+                r'Informational entries explain design choices made '
                 r'automatically by the solver.'
             ))
 

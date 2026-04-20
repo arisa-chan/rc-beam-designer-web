@@ -197,8 +197,9 @@ def generate_column_report(data, mat, geom, loads, engine, res, n_bars, s_outsid
     is_circular = (data.shape == "circular")
     Ag = math.pi * (b / 2.0) ** 2 if is_circular else b * h
     As = res.reinforcement.longitudinal_area
-    cover = 40.0
+    cover = data.cover
     is_smf = (data.frame_system == "special")
+    phi_c = 0.75 if data.column_type == "spiral" else 0.65
 
     # ── Section 1: Material & Geometry ──
     with doc.create(Section("Material \\& Geometry")):
@@ -274,60 +275,80 @@ def generate_column_report(data, mat, geom, loads, engine, res, n_bars, s_outsid
         # 3.2 Slenderness
         with doc.create(Subsection("Slenderness Check (ACI 6.2.5)")):
             lu = data.clear_height
-            k = 1.0
-            r_x = b / (2 * math.sqrt(3))
-            r_y = h / (2 * math.sqrt(3))
+            k = data.k_factor
+            klu = k * lu
+            if is_circular:
+                r_x = r_y = b / 4.0
+                doc.append(Math(data=[NoEscape(
+                    fr"r = \frac{{D}}{{4}} = \frac{{{b:.0f}}}{{4}} = {r_x:.1f} \text{{ mm}}")]))
+            else:
+                r_x = b / (2 * math.sqrt(3))
+                r_y = h / (2 * math.sqrt(3))
+                doc.append(Math(data=[NoEscape(
+                    fr"r_x = \frac{{b}}{{2\sqrt{{3}}}} = \frac{{{b:.0f}}}{{2\sqrt{{3}}}} = {r_x:.1f} \text{{ mm}}")]))
+                doc.append(Math(data=[NoEscape(
+                    fr"r_y = \frac{{h}}{{2\sqrt{{3}}}} = \frac{{{h:.0f}}}{{2\sqrt{{3}}}} = {r_y:.1f} \text{{ mm}}")]))
 
-            doc.append(Math(data=[NoEscape(
-                fr"r_x = \frac{{b}}{{2\sqrt{{3}}}} = \frac{{{b:.0f}}}{{2\sqrt{{3}}}} = {r_x:.1f} \text{{ mm}}")]))
-            doc.append(Math(data=[NoEscape(
-                fr"r_y = \frac{{h}}{{2\sqrt{{3}}}} = \frac{{{h:.0f}}}{{2\sqrt{{3}}}} = {r_y:.1f} \text{{ mm}}")]))
-
-            kl_r_x = k * lu / r_x
-            kl_r_y = k * lu / r_y
+            kl_r_x = klu / r_x
+            kl_r_y = klu / r_y
             kl_r = max(kl_r_x, kl_r_y)
 
             doc.append(Math(data=[NoEscape(
                 fr"\frac{{k l_u}}{{r_x}} = \frac{{{k} \times {lu:.0f}}}{{{r_x:.1f}}} = {kl_r_x:.1f}")]))
-            doc.append(Math(data=[NoEscape(
-                fr"\frac{{k l_u}}{{r_y}} = \frac{{{k} \times {lu:.0f}}}{{{r_y:.1f}}} = {kl_r_y:.1f}")]))
+            if not is_circular:
+                doc.append(Math(data=[NoEscape(
+                    fr"\frac{{k l_u}}{{r_y}} = \frac{{{k} \times {lu:.0f}}}{{{r_y:.1f}}} = {kl_r_y:.1f}")]))
 
             gov_axis = "x" if kl_r_x >= kl_r_y else "y"
-            doc.append(Math(data=[NoEscape(
-                fr"\frac{{k l_u}}{{r}}_{{gov}} = {kl_r:.1f} \quad (\text{{{gov_axis}-axis governs}})")]))
+            if not is_circular:
+                doc.append(Math(data=[NoEscape(
+                    fr"\frac{{k l_u}}{{r}}_{{gov}} = {kl_r:.1f} \quad (\text{{{gov_axis}-axis governs}})")]))
 
-            if kl_r <= 22.0:
-                doc.append(NoEscape(fr"$kl_u/r = {kl_r:.1f} \le 22.0$ — slenderness effects \textbf{{may be neglected}}."))
+            # Per-axis slenderness limits: 34 − 12(M1/M2), capped at 40 (ACI §6.2.5)
+            limit_x = min(40.0, 34.0 - 12.0 * data.m1_m2_x)
+            limit_y = min(40.0, 34.0 - 12.0 * data.m1_m2_y)
+            slender_x = kl_r_x > limit_x
+            slender_y = kl_r_y > limit_y
+            doc.append(NoEscape(
+                fr"Slenderness limits (ACI §6.2.5): $34 - 12(M_1/M_2)_x = {limit_x:.1f}$, "
+                fr"$34 - 12(M_1/M_2)_y = {limit_y:.1f}$"))
+            doc.append(NoEscape(r'\vspace*{0.5em}\\'))
+
+            if not slender_x and not slender_y:
+                doc.append(NoEscape(fr"$kl_u/r_x = {kl_r_x:.1f} \le {limit_x:.1f}$ and "
+                                    fr"$kl_u/r_y = {kl_r_y:.1f} \le {limit_y:.1f}$ — slenderness effects "
+                                    r"\textbf{may be neglected}."))
             else:
-                doc.append(NoEscape(fr"$kl_u/r = {kl_r:.1f} > 22.0$ — \textbf{{slenderness effects must be considered}}."))
-                doc.append(NoEscape(r'\vspace*{0.5em}'))
-                doc.append(NoEscape(r'\\'))
+                doc.append(NoEscape(
+                    fr"$kl_u/r_x = {kl_r_x:.1f}$ (limit {limit_x:.1f}) — {'slender' if slender_x else 'OK'}; "
+                    fr"$kl_u/r_y = {kl_r_y:.1f}$ (limit {limit_y:.1f}) — {'slender' if slender_y else 'OK'}. "
+                    r"\textbf{Slenderness magnification applied.}"))
+                doc.append(NoEscape(r'\vspace*{0.5em}\\'))
 
                 beta_dns = 0.6
-                if kl_r_x >= kl_r_y:
-                    Ig = h * b ** 3 / 12.0
-                    ig_label = fr"I_g = h b^3 / 12 = {h:.0f} \times {b:.0f}^3 / 12"
-                else:
-                    Ig = b * h ** 3 / 12.0
-                    ig_label = fr"I_g = b h^3 / 12 = {b:.0f} \times {h:.0f}^3 / 12"
-
-                EI = 0.4 * mat.ec * Ig / (1 + beta_dns)
-                doc.append(Math(data=[NoEscape(
-                    fr"EI = \frac{{0.4 E_c I_g}}{{1 + \beta_{{dns}}}} = \frac{{0.4 \times {mat.ec:.0f} \times {Ig:.0f}}}{{1 + {beta_dns}}} = {EI:.0f} \text{{ N-mm}}^2")]))
-
-                Pc = (math.pi ** 2 * EI) / (k * lu) ** 2 / 1000
-                doc.append(Math(data=[NoEscape(
-                    fr"P_c = \frac{{\pi^2 EI}}{{(k l_u)^2}} = \frac{{\pi^2 \times {EI:.0f}}}{{({k} \times {lu:.0f})^2}} \times 10^{{-3}} = {Pc:.1f} \text{{ kN}}")]))
-
-                Pu = abs(data.pu)
-                denom = 1.0 - Pu / (0.75 * Pc) if Pc > 0 else 0.0
-                if denom <= 0:
-                    mag = 2.0
-                    doc.append(NoEscape(fr"$P_u / 0.75 P_c \ge 1.0$ — section is unstable. $\delta_{{ns}}$ capped at 2.0."))
-                else:
-                    mag = max(1.0, 1.0 / denom)
+                Pu_sl = abs(data.pu)
+                for axis_lbl, sl_flag, Ig_val, r_val in [
+                    ('x', slender_x, h * b ** 3 / 12.0 if not is_circular else math.pi * (b / 2) ** 4 / 4.0, r_x),
+                    ('y', slender_y, b * h ** 3 / 12.0 if not is_circular else math.pi * (b / 2) ** 4 / 4.0, r_y),
+                ]:
+                    if not sl_flag:
+                        continue
+                    EI = 0.4 * mat.ec * Ig_val / (1 + beta_dns)
+                    Pc = (math.pi ** 2 * EI) / klu ** 2 / 1000
                     doc.append(Math(data=[NoEscape(
-                        fr"\delta_{{ns}} = \frac{{C_m}}{{1 - P_u / (0.75 P_c)}} = \frac{{1.0}}{{1 - {Pu:.1f} / (0.75 \times {Pc:.1f})}} = {mag:.2f}")]))
+                        fr"EI_{axis_lbl} = \frac{{0.4 E_c I_{{g,{axis_lbl}}}}}{{1 + \beta_{{dns}}}} = "
+                        fr"\frac{{0.4 \times {mat.ec:.0f} \times {Ig_val:.0f}}}{{1 + {beta_dns}}} = {EI:.3e} \text{{ N·mm}}^2")]))
+                    doc.append(Math(data=[NoEscape(
+                        fr"P_{{c,{axis_lbl}}} = \frac{{\pi^2 EI_{axis_lbl}}}{{(kl_u)^2}} = "
+                        fr"\frac{{\pi^2 \times {EI:.3e}}}{{({klu:.0f})^2}} \times 10^{{-3}} = {Pc:.1f} \text{{ kN}}")]))
+                    denom = 1.0 - Pu_sl / (0.75 * Pc) if Pc > 0 else 0.0
+                    if denom <= 0:
+                        doc.append(NoEscape(
+                            fr"$P_u / 0.75 P_{{c,{axis_lbl}}} \ge 1.0$ — unstable; $\delta_{{ns,{axis_lbl}}}$ capped at 2.0."))
+                    else:
+                        mag_ax = max(1.0, 1.0 / denom)
+                        doc.append(Math(data=[NoEscape(
+                            fr"\delta_{{ns,{axis_lbl}}} = \frac{{1.0}}{{1 - {Pu_sl:.1f} / (0.75 \times {Pc:.1f})}} = {mag_ax:.2f}")]))
 
         # 3.3 P-M Interaction
         with doc.create(Subsection("P-M Interaction Check")):
@@ -348,17 +369,17 @@ def generate_column_report(data, mat, geom, loads, engine, res, n_bars, s_outsid
             doc.append(Math(data=[NoEscape(fr"\phi M_{{ny}} = \phi_c \times M_{{ny}} = {phi_c} \times {Mny:.1f} = {phi_Mny:.1f} \text{{ kN-m}}")]))
 
             if res.capacity.slenderness_effects:
-                _, mag_factor = engine.check_slenderness_effects(geom, loads, mat, As)
-                Mux_mag = Mux * mag_factor
-                Muy_mag = Muy * mag_factor
+                _, mag_x, mag_y = engine.check_slenderness_effects(geom, loads, mat, As)
+                Mux_mag = Mux * mag_x
+                Muy_mag = Muy * mag_y
                 doc.append(NoEscape(r'\vspace*{0.5em}'))
                 doc.append(NoEscape(r'\\'))
-                doc.append(NoEscape(fr"Moments magnified by $\delta_{{ns}} = {mag_factor:.2f}$:"))
-                doc.append(Math(data=[NoEscape(fr"M_{{ux}} = {Mux:.1f} \times {mag_factor:.2f} = {Mux_mag:.1f} \text{{ kN-m}}")]))
-                doc.append(Math(data=[NoEscape(fr"M_{{uy}} = {Muy:.1f} \times {mag_factor:.2f} = {Muy_mag:.1f} \text{{ kN-m}}")]))
+                doc.append(NoEscape(fr"Slenderness magnifiers: $\delta_{{ns,x}} = {mag_x:.2f}$, $\delta_{{ns,y}} = {mag_y:.2f}$"))
+                doc.append(Math(data=[NoEscape(fr"M_{{ux}} = {Mux:.1f} \times {mag_x:.2f} = {Mux_mag:.1f} \text{{ kN-m}}")]))
+                doc.append(Math(data=[NoEscape(fr"M_{{uy}} = {Muy:.1f} \times {mag_y:.2f} = {Muy_mag:.1f} \text{{ kN-m}}")]))
                 Mux, Muy = Mux_mag, Muy_mag
 
-            alpha = 1.15
+            alpha = 1.15 if not is_circular else 1.5
             ratio_x = (Mux / phi_Mnx) if phi_Mnx > 0 else 0
             ratio_y = (Muy / phi_Mny) if phi_Mny > 0 else 0
 
@@ -385,23 +406,28 @@ def generate_column_report(data, mat, geom, loads, engine, res, n_bars, s_outsid
         long_dia = aci_tool.get_bar_diameter(data.pref_main)
         Av = aci_tool.get_bar_area(tie_size)
         phi_v = 0.75
+        Nu_kN = max(0.0, loads.axial_force)   # compression positive (kN)
+        Nu_N  = Nu_kN * 1000.0                 # N
 
-        # Check if Vc=0 applies (for display)
+        # Check if Vc=0 applies (per ACI §18.7.6.2.1)
         vc_zero = False
         Ve_x_display = abs(loads.shear_x)
         Ve_y_display = abs(loads.shear_y)
 
         if is_smf:
             lu_m = data.clear_height / 1000.0
-            Mpr_c = engine.calculate_probable_moment_capacity(geom, mat, bar_layout, loads.axial_force)
-            Ve_req = (2.0 * Mpr_c) / lu_m if lu_m > 0 else Ve_x_display
-            Ve_x_display = max(Ve_x_display, Ve_req)
-            Ve_y_display = max(Ve_y_display, Ve_req)
+            Mpr_c_x = engine.calculate_probable_moment_capacity(geom, mat, bar_layout, loads.axial_force, 'x')
+            Mpr_c_y = engine.calculate_probable_moment_capacity(geom, mat, bar_layout, loads.axial_force, 'y')
+            Ve_req_x = (2.0 * Mpr_c_x) / lu_m if lu_m > 0 else Ve_x_display
+            Ve_req_y = (2.0 * Mpr_c_y) / lu_m if lu_m > 0 else Ve_y_display
+            Ve_x_display = max(Ve_x_display, Ve_req_x)
+            Ve_y_display = max(Ve_y_display, Ve_req_y)
+            Ve_req = max(Ve_req_x, Ve_req_y)  # for Vc=0 trigger check
 
             phi_Vnx_check, phi_Vny_check = engine.calculate_shear_capacity(
                 geom, mat, tie_size, tie_spacing, res.reinforcement.tie_legs_x,
-                res.reinforcement.tie_legs_y, res.reinforcement.longitudinal_bars)
-            if (Ve_req > 0.5 * max(phi_Vnx_check, phi_Vny_check)) and (abs(loads.axial_force) * 1000 < Ag * fc / 20):
+                res.reinforcement.tie_legs_y, res.reinforcement.longitudinal_bars, Nu=Nu_N)
+            if (Ve_req >= 0.5 * max(Ve_x_display, Ve_y_display)) and (Nu_N < 0.05 * fc * Ag):
                 vc_zero = True
 
         for axis, axis_label in [('x', 'X'), ('y', 'Y')]:
@@ -425,9 +451,14 @@ def generate_column_report(data, mat, geom, loads, engine, res, n_bars, s_outsid
                     doc.append(Math(data=[NoEscape(fr"V_c = 0 \text{{ kN}} \quad \text{{(ACI 18.7.6.2.1: low axial + high seismic shear)}}")]))
                     Vc = 0.0
                 else:
-                    Vc = 0.17 * math.sqrt(fc) * bw * d_eff / 1000
+                    # ACI 318M-25 Table 22.5.5.1: Vc includes axial compression enhancement
+                    Vc_base = 0.17 * math.sqrt(fc)
+                    Vc_nu   = Nu_N / (6.0 * Ag) if Ag > 0 else 0.0
+                    Vc = (Vc_base + Vc_nu) * bw * d_eff / 1000
                     doc.append(Math(data=[NoEscape(
-                        fr"V_c = 0.17 \sqrt{{f'_c}} \, b_w \, d = 0.17 \times \sqrt{{{fc}}} \times {bw:.0f} \times {d_eff:.1f} \times 10^{{-3}} = {Vc:.1f} \text{{ kN}}")]))
+                        fr"V_c = \left(0.17\sqrt{{f'_c}} + \frac{{N_u}}{{6 A_g}}\right) b_w d = "
+                        fr"\left(0.17 \times \sqrt{{{fc}}} + \frac{{{Nu_N:.0f}}}{{6 \times {Ag:.0f}}}\right) "
+                        fr"\times {bw:.0f} \times {d_eff:.1f} \times 10^{{-3}} = {Vc:.1f} \text{{ kN}}")]))
 
                 Av_total = legs * Av
                 Vs = Av_total * fyt * d_eff / tie_spacing / 1000
@@ -510,15 +541,19 @@ def generate_column_report(data, mat, geom, loads, engine, res, n_bars, s_outsid
                 lu_m = data.clear_height / 1000.0
 
                 doc.append(Math(data=[NoEscape(
-                    fr"M_{{pr}} = {Mpr_c:.1f} \text{{ kN-m}} \quad \text{{(from P-M diagram at }} f_{{y,pr}} = 1.25 f_y = {1.25*fy:.0f} \text{{ MPa)}}")]))
+                    fr"M_{{pr,x}} = {Mpr_c_x:.1f} \text{{ kN-m}}, \quad M_{{pr,y}} = {Mpr_c_y:.1f} \text{{ kN-m}} "
+                    fr"\quad (f_{{y,pr}} = 1.25 f_y = {1.25*fy:.0f} \text{{ MPa)}}")]))
                 doc.append(Math(data=[NoEscape(
-                    fr"V_e = \frac{{2 M_{{pr}}}}{{l_u}} = \frac{{2 \times {Mpr_c:.1f}}}{{{lu_m:.3f}}} = {Ve_req:.1f} \text{{ kN}}")]))
+                    fr"V_{{e,x}} = \frac{{2 M_{{pr,x}}}}{{l_u}} = \frac{{2 \times {Mpr_c_x:.1f}}}{{{lu_m:.3f}}} = {Ve_req_x:.1f} \text{{ kN}}")]))
+                doc.append(Math(data=[NoEscape(
+                    fr"V_{{e,y}} = \frac{{2 M_{{pr,y}}}}{{l_u}} = \frac{{2 \times {Mpr_c_y:.1f}}}{{{lu_m:.3f}}} = {Ve_req_y:.1f} \text{{ kN}}")]))
 
                 if vc_zero:
                     doc.append(NoEscape(r'\vspace*{0.5em}'))
                     doc.append(NoEscape(r'\\'))
-                    doc.append(NoEscape(fr"$P_u = {abs(loads.axial_force):.0f}$ kN $< A_g f'_c / 20 = {Ag*fc/20/1000:.0f}$ kN "
-                                        fr"and $V_e > 0.5 \phi V_n$ — \textbf{{$V_c = 0$ per ACI 18.7.6.2.1.}}"))
+                    doc.append(NoEscape(
+                        fr"$P_u = {abs(loads.axial_force):.0f}$ kN $< 0.05 A_g f'_c = {0.05*Ag*fc/1000:.0f}$ kN "
+                        fr"and seismic $V_e \ge 0.5 V_u$ — \textbf{{$V_c = 0$ per ACI 18.7.6.2.1.}}"))
 
     # ── Section 4: Seismic Joint Checks ──
     if j_res is not None:
@@ -594,7 +629,7 @@ def generate_column_report(data, mat, geom, loads, engine, res, n_bars, s_outsid
         with doc.create(Section("Design Notes")):
             with doc.create(Itemize()) as itemize:
                 for note in list(dict.fromkeys(res.design_notes)):
-                    safe_note = note.replace('λ', r'$\lambda$').replace('φ', r'$\phi$').replace('≥', r'$\geq$').replace('≤', r'$\leq$').replace('√', r'$\sqrt{}$')
+                    safe_note = note.replace('λ', r'$\lambda$').replace('φ', r'$\phi$').replace('≥', r'$\geq$').replace('≤', r'$\leq$').replace('√', r'$\sqrt{}$').replace('ℓ', 'l').replace('·', r'$\cdot$')
                     itemize.add_item(NoEscape(safe_note))
 
     # ── Generate PDF ──
